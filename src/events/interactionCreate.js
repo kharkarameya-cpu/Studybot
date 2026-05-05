@@ -94,6 +94,9 @@ module.exports = {
         await interaction.deferReply({ ephemeral: true });
         try {
           const settings = await SettingsService.getSettings(interaction.guildId);
+          if (!settings) {
+            return await interaction.editReply('❌ **Bot setup not found.** Please ask an admin to run `/setup` first to configure the branch categories!');
+          }
           const categoryId = settings[`cat_${branch.toLowerCase()}`];
           const { voiceChannel } = await StudyChannelManager.createStudyGroup(interaction.guild, interaction.user, newValue, categoryId);
           if (interaction.member.voice.channel) await interaction.member.voice.setChannel(voiceChannel).catch(() => null);
@@ -136,6 +139,9 @@ module.exports = {
 
         if (action === 'lfm') {
           const settings = await SettingsService.getSettings(guild.id);
+          if (!settings || !settings.lfm_channel_id) {
+            return await interaction.reply({ content: '❌ **LFM Channel not found.** Please ask an admin to run `/setup` first!', ephemeral: true });
+          }
           const lfmChan = await guild.channels.fetch(settings.lfm_channel_id).catch(() => null);
           if (lfmChan) {
             const lfmEmbed = new EmbedBuilder().setTitle('📢 Study Session Looking for Members').setDescription(`**${user.tag}** is looking for students!\n**Subject:** ${session.topic}\n**Message:** ${newValue}`).setColor(0xF1C40F);

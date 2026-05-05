@@ -36,3 +36,8 @@ async function registerCommands() {
 }
 
 module.exports = registerCommands;
+
+if (require.main === module) {
+  require('dotenv').config();
+  registerCommands();
+}

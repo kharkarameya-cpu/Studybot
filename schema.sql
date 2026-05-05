@@ -1,12 +1,12 @@
 -- Cloudflare D1 SQL Schema for Study Bot
-
+DROP TABLE IF EXISTS study_sessions;
 CREATE TABLE IF NOT EXISTS study_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
     topic TEXT NOT NULL,
     voice_channel_id TEXT NOT NULL,
-    text_channel_id TEXT NOT NULL,
+    text_channel_id TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME NOT NULL,
     is_active INTEGER DEFAULT 1,
