@@ -1,22 +1,17 @@
-const { ChannelType, PermissionFlagsBits } = require('discord.js');
+const { 
+  ChannelType, 
+  PermissionFlagsBits, 
+  ActionRowBuilder, 
+  StringSelectMenuBuilder, 
+  ButtonBuilder, 
+  ButtonStyle 
+} = require('discord.js');
 const StudySession = require('../models/StudySession');
 const logger = require('../utils/logger');
-const SettingsService = require('./settingsService');
 
 class StudyChannelManager {
   async createStudyGroup(guild, owner, subject, categoryId) {
     try {
-      const existing = await StudySession.findOne({ 
-        guildId: guild.id, 
-        ownerId: owner.id, 
-        topic: subject, 
-        isActive: 1 
-      });
-
-      if (existing) {
-        throw new Error('You already have an active study group for this topic.');
-      }
-
       const voiceChannel = await guild.channels.create({
         name: subject,
         type: ChannelType.GuildVoice,
@@ -26,26 +21,22 @@ class StudyChannelManager {
             id: owner.id,
             allow: [
               PermissionFlagsBits.ManageChannels,
+              PermissionFlagsBits.MoveMembers,
               PermissionFlagsBits.MuteMembers,
               PermissionFlagsBits.DeafenMembers,
-              PermissionFlagsBits.MoveMembers,
             ],
           },
         ],
       });
 
-      const sessionData = {
-        guildId: guild.id,
-        ownerId: owner.id,
+      await StudySession.create({
+        guild_id: guild.id,
+        voice_channel_id: voiceChannel.id,
+        owner_id: owner.id,
         topic: subject,
-        voiceChannelId: voiceChannel.id,
-        textChannelId: 'none', // No text channel created
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      };
+      });
 
-      await StudySession.create(sessionData);
-      logger.info(`Study group created: ${subject} by ${owner.tag}`);
-
+      logger.info(`Study group created: ${subject} by ${owner.username}`);
       return { voiceChannel };
     } catch (error) {
       logger.error(`Error creating study group: ${error.message}`);
@@ -53,41 +44,65 @@ class StudyChannelManager {
     }
   }
 
-  async cleanupEmptyChannels(client) {
-    const activeSessions = await StudySession.find({ is_active: 1 });
-    
-    for (const session of activeSessions) {
-      try {
-        const guild = await client.guilds.fetch(session.guild_id);
-        const voiceChannel = await guild.channels.fetch(session.voice_channel_id);
-        
-        if (voiceChannel && voiceChannel.members.size === 0) {
-          logger.info(`Deleting empty study group: ${session.topic}`);
-          await this.closeSession(session, guild);
-        }
-      } catch (error) {
-        if (error.code === 10003) { // Unknown Channel
-          await StudySession.updateStatus(session.id, false);
-        } else {
-          logger.error(`Cleanup Error for ${session.topic}: ${error.message}`);
+  async handleUserLeave(voiceChannel) {
+    try {
+      if (voiceChannel.members.size === 0) {
+        const session = await StudySession.findOne({
+          voice_channel_id: voiceChannel.id,
+          is_active: 1,
+        });
+
+        if (session) {
+          await voiceChannel.delete();
+          await StudySession.close(session.id);
+          logger.info(`Last user left study group: ${session.topic}. Deleting immediately.`);
         }
       }
+    } catch (error) {
+      logger.error(`Error handling user leave: ${error.message}`);
     }
   }
 
   async closeSession(session, guild) {
     try {
-      const voiceChannel = await guild.channels.fetch(session.voice_channel_id);
-      if (voiceChannel) await voiceChannel.delete();
-
-      if (session.text_channel_id && session.text_channel_id !== 'none') {
-        const textChannel = await guild.channels.fetch(session.text_channel_id);
-        if (textChannel) await textChannel.delete();
-      }
-
-      await StudySession.updateStatus(session.id, false);
+      const channel = await guild.channels.fetch(session.voice_channel_id).catch(() => null);
+      if (channel) await channel.delete();
+      await StudySession.close(session.id);
     } catch (error) {
       logger.error(`Error closing session ${session.topic}: ${error.message}`);
+    }
+  }
+
+  async refreshAllDashboards(client) {
+    const activeSessions = await StudySession.find({ is_active: 1 });
+    logger.info(`Refreshing UI for ${activeSessions.length} active sessions...`);
+
+    for (const session of activeSessions) {
+      try {
+        const guild = await client.guilds.fetch(session.guild_id);
+        const voiceChannel = await guild.channels.fetch(session.voice_channel_id);
+        
+        const messages = await voiceChannel.messages.fetch({ limit: 10 });
+        const dashboardMsg = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
+
+        if (dashboardMsg) {
+          const s1 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s1').setPlaceholder('Change channel settings').addOptions([
+            { label: 'Name', value: 'name', emoji: '📝' }, { label: 'Limit', value: 'limit', emoji: '👥' }, { label: 'Status', value: 'status', emoji: '💬' }, { label: 'Subject', value: 'subject', emoji: '🎮' },
+            { label: 'LFM', value: 'lfm', emoji: '📢' }, { label: 'Bitrate', value: 'bitrate', emoji: '📶' }, { label: 'Region', value: 'region', emoji: '🌐' }
+          ]));
+          const s2 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s2').setPlaceholder('Change channel permissions').addOptions([
+            { label: 'Lock', value: 'lock', emoji: '🔒' }, { label: 'Unlock', value: 'unlock', emoji: '🔓' }, { label: 'Permit', value: 'permit', emoji: '✅' }, { label: 'Reject', value: 'reject', emoji: '🚫' }, { label: 'Invite', value: 'invite', emoji: '➕' }
+          ]));
+          const b1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('load_settings').setLabel('Load Settings').setStyle(ButtonStyle.Primary).setEmoji('⚙️'),
+            new ButtonBuilder().setLabel('Dashboard').setStyle(ButtonStyle.Link).setURL('https://discord.com')
+          );
+
+          await dashboardMsg.edit({ components: [s1, s2, b1] });
+        }
+      } catch (e) {
+        logger.error(`Failed to refresh dashboard for session ${session.id}: ${e.message}`);
+      }
     }
   }
 }

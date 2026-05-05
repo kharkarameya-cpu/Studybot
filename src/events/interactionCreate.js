@@ -26,6 +26,18 @@ module.exports = {
       const { customId, guild, user, channelId } = interaction;
       const action = interaction.values ? interaction.values[0] : customId;
 
+      // 1. SILENT REGION HANDLER (High Priority)
+      if (customId === 'select_region') {
+        try {
+          const session = await StudySession.findOne({ guildId: guild.id, isActive: 1, voice_channel_id: channelId });
+          if (!session || session.owner_id !== user.id) return await interaction.reply({ content: '❌ Only owner.', ephemeral: true });
+          const voiceChannel = await guild.channels.fetch(session.voice_channel_id);
+          await voiceChannel.setRTCRegion(action === 'auto' ? null : action);
+          return await interaction.deferUpdate(); // Stop here, no more popups
+        } catch (e) { return await interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
+      }
+
+      // 2. BRANCH SELECTION
       if (customId === 'select_branch') {
         const branch = interaction.values[0];
         const modal = new ModalBuilder().setCustomId(`subject_modal_${branch}`).setTitle(`${branch} Study Session`);
@@ -34,28 +46,42 @@ module.exports = {
         return await interaction.showModal(modal);
       }
 
+      // 3. DASHBOARD CONTROLS
       const session = await StudySession.findOne({ guildId: guild.id, isActive: 1, voice_channel_id: channelId });
       if (!session || session.owner_id !== user.id) return await interaction.reply({ content: '❌ Only the room owner can use these controls.', ephemeral: true });
 
       try {
         const voiceChannel = await guild.channels.fetch(session.voice_channel_id);
+        
         if (action === 'lock') {
           await voiceChannel.permissionOverwrites.edit(guild.roles.everyone, { Connect: false });
-          return await interaction.reply({ content: '🔒 **Room Locked.** New participants cannot join.', ephemeral: true });
+          return await interaction.reply({ content: '🔒 **Room Locked.**', ephemeral: true });
         }
         if (action === 'unlock') {
           await voiceChannel.permissionOverwrites.edit(guild.roles.everyone, { Connect: true });
-          return await interaction.reply({ content: '🔓 **Room Unlocked.** Everyone is welcome.', ephemeral: true });
+          return await interaction.reply({ content: '🔓 **Room Unlocked.**', ephemeral: true });
+        }
+        if (action === 'region') {
+          const regionMenu = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('select_region').setPlaceholder('Pick a Voice Region').addOptions([
+              { label: 'Automatic', value: 'auto', emoji: '🌐' }, { label: 'India', value: 'india', emoji: '🇮🇳' },
+              { label: 'Singapore', value: 'singapore', emoji: '🇸🇬' }, { label: 'US East', value: 'us-east', emoji: '🇺🇸' },
+              { label: 'US West', value: 'us-west', emoji: '🇺🇸' }, { label: 'Japan', value: 'japan', emoji: '🇯🇵' },
+              { label: 'Sydney', value: 'sydney', emoji: '🇦🇺' }, { label: 'Rotterdam', value: 'rotterdam', emoji: '🇳🇱' },
+            ])
+          );
+          return await interaction.reply({ content: '🌐 Select voice region:', components: [regionMenu], ephemeral: true });
         }
 
-        const modal = new ModalBuilder().setCustomId(`update_${action}_modal`).setTitle(`Update ${action.toUpperCase()}`);
-        const input = new TextInputBuilder().setCustomId('new_value').setLabel(`Enter new ${action}`).setStyle(TextInputStyle.Short).setRequired(true);
-        
-        if (action === 'lfm') input.setLabel('Recruitment Message').setPlaceholder('e.g. Need 2 more for group study!');
-        if (['permit', 'reject', 'invite'].includes(action)) input.setLabel('User ID or @Mention');
-        
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
-        return await interaction.showModal(modal);
+        // Modals for text-based controls
+        if (['name', 'limit', 'status', 'subject', 'lfm', 'bitrate', 'permit', 'reject', 'invite'].includes(action)) {
+          const modal = new ModalBuilder().setCustomId(`update_${action}_modal`).setTitle(`Update ${action.toUpperCase()}`);
+          const input = new TextInputBuilder().setCustomId('new_value').setLabel(`Enter new ${action}`).setStyle(TextInputStyle.Short).setRequired(true);
+          if (action === 'lfm') input.setLabel('Recruitment Message');
+          if (['permit', 'reject', 'invite'].includes(action)) input.setLabel('User ID or @Mention');
+          modal.addComponents(new ActionRowBuilder().addComponents(input));
+          return await interaction.showModal(modal);
+        }
       } catch (e) { await interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
     }
 
@@ -71,31 +97,17 @@ module.exports = {
           const categoryId = settings[`cat_${branch.toLowerCase()}`];
           const { voiceChannel } = await StudyChannelManager.createStudyGroup(interaction.guild, interaction.user, newValue, categoryId);
           if (interaction.member.voice.channel) await interaction.member.voice.setChannel(voiceChannel).catch(() => null);
+          await interaction.editReply({ content: `✅ **Session Created!**` });
           
-          await interaction.editReply({ content: `✅ **Session Created!** You have been moved to **${voiceChannel.name}**.` });
-          
-          const dashboardEmbed = new EmbedBuilder()
-            .setTitle(`📖 ${newValue} - Control Panel`)
-            .setDescription('**Welcome to your temporary voice channel!**\nUse the menus below to manage your room settings and permissions.\n\n• Use drop-downs for all settings\n• Or use slash commands\n• Use `/toggle set` to disable this interface')
-            .addFields(
-              { name: 'Channel Owner', value: `<@${interaction.user.id}>`, inline: true },
-              { name: 'Branch', value: `\`${branch}\``, inline: true }
-            )
-            .setColor(0x2B2D31).setThumbnail(interaction.client.user.displayAvatarURL())
-            .setFooter({ text: 'StudyBot+ | Premium Management' });
-
-          const s1 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s1').setPlaceholder('Change channel settings').addOptions([
+          const dashboardEmbed = new EmbedBuilder().setTitle(`📖 ${newValue} - Control Panel`).setDescription('Manage your room settings below.').setColor(0x2B2D31).setThumbnail(interaction.client.user.displayAvatarURL());
+          const s1 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s1').setPlaceholder('Settings').addOptions([
             { label: 'Name', value: 'name', emoji: '📝' }, { label: 'Limit', value: 'limit', emoji: '👥' }, { label: 'Status', value: 'status', emoji: '💬' }, { label: 'Subject', value: 'subject', emoji: '🎮' },
             { label: 'LFM', value: 'lfm', emoji: '📢' }, { label: 'Bitrate', value: 'bitrate', emoji: '📶' }, { label: 'Region', value: 'region', emoji: '🌐' }
           ]));
-          const s2 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s2').setPlaceholder('Change channel permissions').addOptions([
+          const s2 = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('s2').setPlaceholder('Permissions').addOptions([
             { label: 'Lock', value: 'lock', emoji: '🔒' }, { label: 'Unlock', value: 'unlock', emoji: '🔓' }, { label: 'Permit', value: 'permit', emoji: '✅' }, { label: 'Reject', value: 'reject', emoji: '🚫' }, { label: 'Invite', value: 'invite', emoji: '➕' }
           ]));
-          const b1 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('load_settings').setLabel('Load Settings').setStyle(ButtonStyle.Primary).setEmoji('⚙️'),
-            new ButtonBuilder().setLabel('Dashboard').setStyle(ButtonStyle.Link).setURL('https://discord.com')
-          );
-
+          const b1 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('load_settings').setLabel('Load Settings').setStyle(ButtonStyle.Primary).setEmoji('⚙️'));
           await voiceChannel.send({ embeds: [dashboardEmbed], components: [s1, s2, b1] });
         } catch (e) { await interaction.editReply(`❌ Error: ${e.message}`); }
       }
@@ -126,11 +138,7 @@ module.exports = {
           const settings = await SettingsService.getSettings(guild.id);
           const lfmChan = await guild.channels.fetch(settings.lfm_channel_id).catch(() => null);
           if (lfmChan) {
-            const lfmEmbed = new EmbedBuilder()
-              .setTitle('📢 Study Session Looking for Members')
-              .setDescription(`**${user.tag}** is looking for students to join their session!\n\n**Subject:** ${session.topic}\n**Message:** ${newValue}`)
-              .addFields({ name: 'Join Room', value: `[Click to Join](${voiceChannel.url})` })
-              .setColor(0xF1C40F).setTimestamp();
+            const lfmEmbed = new EmbedBuilder().setTitle('📢 Study Session Looking for Members').setDescription(`**${user.tag}** is looking for students!\n**Subject:** ${session.topic}\n**Message:** ${newValue}`).setColor(0xF1C40F);
             await lfmChan.send({ content: '@everyone', embeds: [lfmEmbed] });
           }
         }
